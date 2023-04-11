@@ -1,0 +1,14 @@
+__pycache__/
+.vscode/
+CSV-03-11/
+data/
+dataset/
+dataset_lite/
+result/
+model/
+train_set/
+*.csv
+*.pcap
+*.tar.gz
+*.gz
+test*
