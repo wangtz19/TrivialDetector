@@ -48,7 +48,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
         ttl = ip.ttl
         chksum = ip.sum
         flags = ip._flags_offset
-        payload = ""
+        # payload = ""
         tcp_window = ""
         tcp_dataoffset = ""
         udp_length = ""
@@ -56,7 +56,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
         proto_code = type_identity_mp["TYPE_UNKNOWN"]
         if ip.p == dpkt.ip.IP_PROTO_TCP:
             tcp = ip.data
-            payload = tcp.data
+            # payload = tcp.data
             src_port = tcp.sport
             dst_port = tcp.dport
             tcp_window = tcp.win
@@ -76,7 +76,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
                 print("udp is not instance of dpkt.udp.UDP")
                 print(f"protocol: {ip.p}")
                 continue
-            payload = udp.data
+            # payload = udp.data
             src_port = udp.sport
             dst_port = udp.dport
             udp_length = udp.ulen
@@ -92,7 +92,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
         all_fields.append([src_addr, dst_addr, src_ip, dst_ip, src_port, dst_port, 
                            protocol, proto_code, pkt_length, ts,
                            tos, id, ttl, chksum, flags, tcp_window, tcp_dataoffset, udp_length,
-                           payload])
+                           ])
     if save_path is None:
         try:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -103,7 +103,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
                 , header=["src_addr", "dst_addr", "src_ip", "dst_ip", "src_port", "dst_port", 
                         "protocol", "proto_code", "pkt_length", "timestamp", "tos", "id", 
                         "ttl", "chksum", "flags", "tcp_window", "tcp_dataoffset", "udp_length",
-                        "payload"], index=False)
+                        ], index=False)
     
 
 import subprocess

@@ -7,6 +7,7 @@ dataset_lite/
 result/
 model/
 train_set/
+attack_set/
 *.csv
 *.pcap
 *.tar.gz
