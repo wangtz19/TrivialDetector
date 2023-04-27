@@ -84,15 +84,15 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
         else:
             proto_code = type_identity_mp["TYPE_UNKNOWN"]
 
-        src_addr = struct.unpack("!I", ip.src)[0]
-        dst_addr = struct.unpack("!I", ip.dst)[0]
+        # src_addr = struct.unpack("!I", ip.src)[0]
+        # dst_addr = struct.unpack("!I", ip.dst)[0]
         src_ip = socket.inet_ntoa(ip.src)
         dst_ip = socket.inet_ntoa(ip.dst)
         pkt_length = len(buf)
-        all_fields.append([src_addr, dst_addr, src_ip, dst_ip, src_port, dst_port, 
+        all_fields.append([src_ip, dst_ip, src_port, dst_port, 
                            protocol, proto_code, pkt_length, ts,
-                           tos, id, ttl, chksum, flags, tcp_window, tcp_dataoffset, udp_length,
-                           ])
+                           tos, id, ttl, chksum, flags, tcp_window, 
+                           tcp_dataoffset, udp_length,])
     if save_path is None:
         try:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -100,7 +100,7 @@ def pcap2csv_by_dpkt(filename: str, save_path: str = None, pcapng: bool = False)
             pass
     sp = save_path if save_path is not None else filename.replace(suffix, ".csv")
     pd.DataFrame(all_fields).to_csv(sp, sep=","
-                , header=["src_addr", "dst_addr", "src_ip", "dst_ip", "src_port", "dst_port", 
+                , header=["src_ip", "dst_ip", "src_port", "dst_port", 
                         "protocol", "proto_code", "pkt_length", "timestamp", "tos", "id", 
                         "ttl", "chksum", "flags", "tcp_window", "tcp_dataoffset", "udp_length",
                         ], index=False)

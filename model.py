@@ -28,8 +28,30 @@ def get_flows(df: pd.DataFrame, key_type: str = "default") -> dict:
 
 
 from config import whisper_config
-MAX_LEN = whisper_config["n_fft"] * 2
 import torch
+
+MAX_LEN = whisper_config["n_fft"] * 2
+
+def fft_module(vec):
+    ten = torch.tensor(vec)
+    ten_fft = torch.fft.fft(ten, n=(whisper_config["n_fft"] // 2)+1)
+    ten_power = torch.pow(ten_fft.real, 2) + torch.pow(ten_fft.imag, 2)
+    ten_res = (ten_power.squeeze()+1).log2()
+    ten_res = torch.where(torch.isnan(ten_res), torch.zeros_like(ten_res), ten_res)
+    ten_res = torch.where(torch.isinf(ten_res), torch.zeros_like(ten_res), ten_res)
+    return ten_res
+
+def stft_module(vec):
+    ten = torch.tensor(vec)
+    # stft requirement: input_size > (n_fft // 2)
+    # default return shape: (floor(n_fft/2)+1, n_frame, 2)
+    ten_fft = torch.stft(ten, whisper_config["n_fft"])
+    ten_power = torch.pow(ten_fft[:,:,0], 2) + torch.pow(ten_fft[:,:,1], 2)
+    ten_res = ((ten_power.squeeze()+1).log2()).permute(1,0)
+    ten_res = torch.where(torch.isnan(ten_res), torch.zeros_like(ten_res), ten_res)
+    ten_res = torch.where(torch.isinf(ten_res), torch.zeros_like(ten_res), ten_res)
+    # ten_res shape: (n_frame, floor(n_fft/2)+1)
+    return ten_res
 
 def transform(mp: dict, feature_type: str = "whisper", 
               data_type: str = "train", test_data_aug: bool = True):
@@ -46,12 +68,7 @@ def transform(mp: dict, feature_type: str = "whisper",
                 # packet_labels.append(flow.label)
 
                 # implement fft on short flows
-                ten = torch.tensor(vec)
-                ten_fft = torch.fft.fft(ten, n=(whisper_config["n_fft"] // 2)+1)
-                ten_power = torch.pow(ten_fft.real, 2) + torch.pow(ten_fft.imag, 2)
-                ten_res = (ten_power.squeeze()+1).log2()
-                ten_res = torch.where(torch.isnan(ten_res), torch.zeros_like(ten_res), ten_res)
-                ten_res = torch.where(torch.isinf(ten_res), torch.zeros_like(ten_res), ten_res)
+                ten_res = fft_module(vec)
                 if data_type == "test" and test_data_aug:
                     # data shape for test data augmentation: (n_flow, n_sample, floor(n_fft/2)+1)
                     packet_data.append([ten_res.tolist()])
@@ -62,15 +79,7 @@ def transform(mp: dict, feature_type: str = "whisper",
                 
             else:
                 # flow level featrues
-                ten = torch.tensor(vec)
-                # stft requirement: input_size > (n_fft // 2)
-                # default return shape: (floor(n_fft/2)+1, n_frame, 2)
-                ten_fft = torch.stft(ten, whisper_config["n_fft"])
-                ten_power = torch.pow(ten_fft[:,:,0], 2) + torch.pow(ten_fft[:,:,1], 2)
-                ten_res = ((ten_power.squeeze()+1).log2()).permute(1,0)
-                ten_res = torch.where(torch.isnan(ten_res), torch.zeros_like(ten_res), ten_res)
-                ten_res = torch.where(torch.isinf(ten_res), torch.zeros_like(ten_res), ten_res)
-                # ten_res shape: (n_frame, floor(n_fft/2)+1)
+                ten_res = stft_module(vec)
                 if data_type == "train":
                     if (ten_res.size(0) > whisper_config["mean_win_train"]):
                         for _ in range(whisper_config["num_train_sample"]):
@@ -158,33 +167,61 @@ from sklearn.cluster import KMeans
 import os
 import json
 
-def train(train_data, save_path, n_clusters):
-    train_data = torch.tensor(train_data)
+
+def train_kmeans(train_data, kmeans_save_path, n_clusters=10):
+    train_data = torch.tensor(train_data).float()
     kmeans = KMeans(n_clusters=n_clusters, random_state=0)
-    kmeans.fit(train_data.cpu().numpy())
-
-    centroids = torch.tensor(kmeans.cluster_centers_)
-    train_loss = torch.cdist(train_data, centroids, p=2).min(dim=1).values.mean()
-
-    if not os.path.exists(os.path.dirname(save_path)):
-        os.makedirs(os.path.dirname(save_path))
-    with open(save_path, "w") as f:
+    kmeans.fit(train_data)
+    centroids = torch.tensor(kmeans.cluster_centers_).float()
+    train_loss = torch.cdist(train_data, centroids, p=2).min(dim=1).values
+    if not os.path.exists(os.path.dirname(kmeans_save_path)):
+        os.makedirs(os.path.dirname(kmeans_save_path))
+    with open(kmeans_save_path, "w") as f:
         json.dump({
             "centroids": centroids.tolist(),
-            "train_loss": train_loss.item(),
-        }, f)
+            "train_loss": train_loss.mean().item(),
+            "train_loss_list": train_loss.cpu().tolist()
+        }, f, indent=4)
 
 
-import os
-import json
+def train_ae(train_data, train_labels, save_dir,
+            model, criterion, optimizer, device, 
+            batch_size=32, num_epochs=200, 
+            decoder_sigmoid=False):
+    train_dataset = Dataset(train_data, train_labels)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    loss_list = []
+    model.to(device)
+    model.train()
+    for epoch in range(num_epochs):
+        for data, labels in train_loader:
+            if decoder_sigmoid:
+                data = torch.sigmoid(data.to(device).float())
+            else:
+                data = data.to(device).float()
+            optimizer.zero_grad()
+            outputs = model(data)
+            loss = criterion(outputs, data)
+            loss_list.append(loss.item())
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
+    os.makedirs(save_dir, exist_ok=True)
+    model_save_path = os.path.join(save_dir, "model.pt")
+    torch.save(model.state_dict(), model_save_path)
+    loss_save_path = os.path.join(save_dir, "train_loss.json")
+    with open(loss_save_path, "w") as f:
+        json.dump(loss_list, f)
 
-def test(test_data, load_path, save_path):
-    with open(load_path, "r") as f:
-        centroids = json.load(f)["centroids"]
-    centroids = torch.tensor(centroids)
-    
-    test_res = []
-    for key, val in test_data.items():
+
+def test_kmeans(data, kmeans_load_path, whisper_config, scale=10):
+    with open(kmeans_load_path, "r") as f:
+        model_param = json.load(f)
+    centroids = torch.tensor(model_param["centroids"])
+    train_loss = model_param["train_loss"]
+
+    kmeans_preds, kmeans_ratios, test_loss_list = [], []
+    for val in data:
         val = torch.tensor(val)
         if (val.size(0) > whisper_config["mean_win_test"]):
             max_dist = 0
@@ -196,10 +233,34 @@ def test(test_data, load_path, save_path):
             min_dist = max_dist
         else:
             min_dist = torch.norm(val.mean(dim=0) - centroids, dim=1).min()
-        test_res.append({"key": key, "loss": min_dist.item()})
+        test_loss_list.append(min_dist)
+        kmeans_preds.append(-1 if min_dist > scale * train_loss else 1)
+        kmeans_ratios.append(min_dist/(scale * train_loss))
+    
+    return kmeans_preds, kmeans_ratios, test_loss_list
 
-    if not os.path.exists(os.path.dirname(save_path)):
-        os.makedirs(os.path.dirname(save_path))
-    with open(save_path, "w") as f:
-        json.dump(test_res, f)
+
+def test_ae(test_data, model, device, criterion, 
+            threshold, scale=5, test_data_aug=False,
+            decoder_sigmoid=False):
+    model.eval()
+    preds, ratios, loss_list = [], [], []
+    with torch.no_grad():
+        for val in test_data:
+            if decoder_sigmoid:
+                data = torch.sigmoid(torch.tensor(val).to(device)).float()
+            else:
+                data = torch.tensor(val).to(device).float()
+            outputs = model(data)
+            loss = criterion(outputs, data)
+            if not test_data_aug:
+                ratios.append(loss.item()/(scale * threshold))
+                preds.append(-1 if loss.item() > threshold * scale else 1)
+                loss_list.append(loss.item())
+            else:
+                ratios.append(loss.max().item()/(scale * threshold))
+                preds.append(-1 if loss.max().item() > threshold * scale else 1)
+                loss_list.append(loss.max().item())
+
+    return preds, ratios, loss_list
 
