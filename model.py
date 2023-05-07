@@ -220,7 +220,7 @@ def test_kmeans(data, kmeans_load_path, whisper_config, scale=10):
     centroids = torch.tensor(model_param["centroids"])
     train_loss = model_param["train_loss"]
 
-    kmeans_preds, kmeans_ratios, test_loss_list = [], []
+    kmeans_preds, kmeans_ratios, test_loss_list = [], [], []
     for val in data:
         val = torch.tensor(val)
         if (val.size(0) > whisper_config["mean_win_test"]):
