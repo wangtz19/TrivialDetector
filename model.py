@@ -237,7 +237,7 @@ def test_kmeans(data, kmeans_load_path, whisper_config, scale=10):
         kmeans_preds.append(-1 if min_dist > scale * train_loss else 1)
         kmeans_ratios.append(min_dist/(scale * train_loss))
     
-    return kmeans_preds, kmeans_ratios, test_loss_list
+    return kmeans_preds, kmeans_ratios, test_loss_list, scale*train_loss
 
 
 def test_ae(test_data, model, device, criterion, 
@@ -262,5 +262,121 @@ def test_ae(test_data, model, device, criterion,
                 preds.append(-1 if loss.max().item() > threshold * scale else 1)
                 loss_list.append(loss.max().item())
 
-    return preds, ratios, loss_list
+    return preds, ratios, loss_list, scale*threshold
+
+
+from sklearn.metrics import accuracy_score, roc_curve, auc, precision_score, recall_score, f1_score
+import numpy as np
+def get_metrics(y_true, y_pred, pos_label=-1, neg_label=1):
+    acc = accuracy_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred, pos_label=pos_label)
+    precision = precision_score(y_true, y_pred, pos_label=pos_label)
+    f1 = f1_score(y_true, y_pred, pos_label=pos_label)
+    try:
+        tpr = np.sum(np.array(y_true) == pos_label & np.array(y_pred) == pos_label) \
+            / np.sum(np.array(y_true) == pos_label)
+    except:
+        tpr = np.nan
+    try:
+        fpr = np.sum(np.array(y_true) == neg_label & np.array(y_pred) == pos_label) \
+            / np.sum(np.array(y_true) == neg_label)
+    except:
+        fpr = np.nan
+    try:
+        _fpr, _tpr, _ = roc_curve(y_true, y_pred, pos_label=pos_label)
+        auc_score = auc(_fpr, _tpr)
+        eer = _fpr[np.nanargmin(np.absolute((_fpr + _tpr) - 1))]
+    except:
+        auc_score = np.nan
+        eer = np.nan
+    return acc, recall, precision, f1, tpr, fpr, auc_score, eer
+
+
+def test_ensemble(datac, dataw, labels, kmeans_load_path,
+         aec_input_dim, aec_load_path, aew_input_dim, aew_load_path, 
+         kmeans_scale=7, aec_scale=10, aew_scale=3,
+         test_data_aug=False, vote_method="majority", plot_dir=None):
+    
+    kmeans_preds, kmeans_ratios, kmeans_loss_list, kmeans_threshold = \
+        test_kmeans(dataw, kmeans_load_path, whisper_config, scale=kmeans_scale)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    criterion = nn.MSELoss()
+
+    model_aec = AutoEncoder(aec_input_dim, decoder_sigmoid=True)
+    model_aec.load_state_dict(torch.load(os.path.join(aec_load_path, "model.pt")))
+    model_aec.to(device)
+    with open(os.path.join(aec_load_path, "train_loss.json"), "r") as f:
+        loss_list = json.load(f)
+    threshold = torch.tensor(loss_list).mean().item()
+    aec_preds, aec_ratios, aec_loss_list, aec_threshold = \
+        test_ae(datac, model_aec, device, criterion, threshold, 
+                scale=aec_scale, test_data_aug=False, decoder_sigmoid=True) 
+    
+    model_aew = AutoEncoder(aew_input_dim)
+    model_aew.load_state_dict(torch.load(os.path.join(aew_load_path, "model.pt")))
+    model_aew.to(device)
+    with open(os.path.join(aew_load_path, "train_loss.json"), "r") as f:
+        loss_list = json.load(f)
+    threshold = torch.tensor(loss_list).mean().item()
+    aew_preds, aew_ratios, aew_loss_list, aew_threshold = \
+        test_ae(dataw, model_aew, device, criterion, threshold, 
+                scale=aew_scale, test_data_aug=test_data_aug, decoder_sigmoid=False)
+
+    # preds = np.sign(np.array(kmeans_preds) + np.array(aec_preds) + np.array(aew_preds))
+    preds_majority, preds_positive, preds_weighted = [], [], []
+    for idx in range(len(kmeans_preds)):
+        preds_majority.append(np.sign(kmeans_preds[idx] + aec_preds[idx] + aew_preds[idx]))
+        if kmeans_preds[idx] == -1 or aec_preds[idx] == -1 or aew_preds[idx] == -1:
+            preds_positive.append(-1)
+        else:
+            preds_positive.append(1)
+        preds_weighted.append(np.sign(kmeans_preds[idx] * kmeans_ratios[idx] +
+                                        aec_preds[idx] * aec_ratios[idx] + 
+                                        aew_preds[idx] * aew_ratios[idx]))
+    return {
+        "labels": labels,
+        "kmeans": kmeans_preds,
+        "aec": aec_preds,
+        "aew": aew_preds,
+        "preds_majority": preds_majority,
+        "preds_positive": preds_positive,
+        "preds_weighted": preds_weighted,
+    }
+
+
+def get_ensemble_result(df_test, test_data_aug, use_short_flow, 
+                        kmeans_load_path, aec_input_dim, aec_load_path, 
+                        aew_input_dim, aew_load_path, vote_method="majority",
+                        plot_dir=None, kmeans_scale=7, aec_scale=10, aew_scale=3):
+    
+    test_packet_data, test_packet_labels, test_flow_data, test_flow_labels  \
+    = transform(get_flows(df_test), feature_type="encoding" 
+                ,data_type="test", test_data_aug=test_data_aug)
+    data_encoding = test_flow_data if not use_short_flow else test_flow_data + test_packet_data
+    labels_encoding = test_flow_labels if not use_short_flow else test_flow_labels + test_packet_labels
+
+    test_packet_data, test_packet_labels, test_flow_data, test_flow_labels \
+    = transform(get_flows(df_test), data_type="test", test_data_aug=test_data_aug)
+    data_whisper = test_flow_data if not use_short_flow else test_flow_data + test_packet_data
+    labels_whisper = test_flow_labels if not use_short_flow else test_flow_labels + test_packet_labels
+
+    assert len(labels_encoding) == len(labels_whisper), \
+        print(f"len labels_encoding: {len(labels_encoding)}, len labels_whisper: {len(labels_whisper)}")
+    for idx in range(len(labels_encoding)):
+        assert labels_encoding[idx] == labels_whisper[idx]
+    
+    data_dict = test_ensemble(data_encoding, data_whisper, labels_whisper, 
+                        kmeans_load_path, aec_input_dim, aec_load_path, aew_input_dim, 
+                        aew_load_path, test_data_aug=test_data_aug, vote_method=vote_method,
+                        kmeans_scale=kmeans_scale, aec_scale=aec_scale, aew_scale=aew_scale)
+    
+    # if plot_dir is not None:
+    #     plot_cdf(, kmeans_loss_list, "kmeans", plot_dir)
+
+    metric_dict = {}
+    for key in ["kmeans", "aec", "aew", "preds_majority", "preds_positive", "preds_weighted"]:
+        metric_dict[key] = get_metrics(data_dict["labels"], data_dict[key])
+    
+    return metric_dict
 

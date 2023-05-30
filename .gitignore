@@ -8,6 +8,7 @@ result/
 model/
 train_set/
 attack_set/
+cic-ids*/
 *.csv
 *.pcap
 *.tar.gz

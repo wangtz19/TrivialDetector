@@ -17,4 +17,4 @@ editcap -r dataset/HOIC.pcap attack_set/HOIC_small.pcapng 1-100000
 editcap -r dataset/LDoS.pcap attack_set/LDoS_small.pcapng 1-100000
 editcap -r dataset/LOIC_UDP.pcap attack_set/LOIC_UDP_small.pcapng 1-100000
 # editcap -r dataset/SYNDoS.pcap attack_set/SYNDoS_small.pcapng 1-100000
-editcap -r dataset/SYNDoS.pcap attack_set/SYNDoS_small.pcapng 600000-800000
+# editcap -r dataset/SYNDoS.pcap attack_set/SYNDoS_small.pcapng 600000-800000
